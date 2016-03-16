@@ -1,0 +1,283 @@
+---
+title: "Machine Learning - Project"
+author: "bshad74"
+date: "March 14, 2016"
+output: html_document
+---
+```{r, echo=FALSE}
+message(sprintf("Run time: %s\nR version: %s", Sys.time(), R.Version()$version.string))
+```
+
+#1. Synopsis
+
+It is now possible to collect a large amount of data about personal activity relatively inexpensively Using devices such as Jawbone Up, Nike FuelBand, and Fitbit . Data such as how much of a particular activity they do. While quantity of the activity can be seen, they rarely quantify how well they do it. In this project, goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+The goal of this project is to predict the manner in which the participants did the exercise. This is the "classe" variable in the training set.
+
+##1.1 Data
+
+The training and test data for this project was downloaded from the following sources respectively: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+#2. Methodology
+
+According to the principles of cross-validation, the data was preprocessed to find the relevant variables and format the data so that a classifier could be run on it.
+
+The following are the main principles of cross-validation that the my model abides by: 
+1. Use the training set. 
+2. Split it into training/test sets. 
+3. Build a model on the training set. 
+4. Evaluate on the test set. 
+5. Repeat and average the estimated errors.
+
+##2.1 Reproducibility
+
+An overall pseudo-random number generator seed was set at 33833 for all code. In order to reproduce the results below, the same seed should be used.
+Different packages were downloaded and installed, such as caret and randomForest. These should also be installed in order to reproduce the results below.
+
+##2.2 The Model 
+
+Classe is an outcome variable, which is a factor variable with 5 levels. For this data set, "participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5 different fashions:
+
+- exactly according to the specification (Class A)
+- throwing the elbows to the front (Class B)
+- lifting the dumbbell only halfway (Class C)
+- lowering the dumbbell only halfway (Class D)
+- throwing the hips to the front (Class E)
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Prediction evaluations will be based on maximizing the accuracy and minimizing the out-of-sample error. All other available variables after cleaning will be used for prediction.
+Two models will be tested using random forest algorithms. The model with the highest accuracy will be chosen as our final model.
+
+##2.3 Cross-validation
+
+Cross-validation will be done by splitting training data set randomly without replacement into 2 subsamples: DTrain data (60% of the original Training data set) and Crossv data (40%). Our models will be fitted on the DTrain data set, and tested on the Crossv data. Once the most accurate model is choosen, it will be tested on the provided Testing data set.
+
+#3. Data Processing and Modelling 
+
+The original dataset has 160 variables including the "classe" class variable that indicates the exercise type of the participant's activity. To reduce dimensionality, only the most useful predictors (i.e., variables) were selected. This was accomplished by eliminating variables that had too many NAs, non-numeric variables, variables that had too few unique values, and finally variables that had relatively low values of importance.
+
+##3.1 Load libraries, set working Directory and set Seed
+
+```{r, echo=FALSE, results='hide'}
+require("caret")
+require("lattice")
+require("ggplot2")
+require("data.table")
+require("randomForest")
+require("reshape2")
+require("parallel")
+require("doParallel")
+require("rpart")
+require("rpart.plot")
+set.seed(33833)
+setwd("~/Coursera/PracticalMachineLearning/PMLProject")
+```
+
+##3.2 Load data, Remving NAs and subsetting the primary
+
+First we want to load the data sets into R and make sure that missing values are coded correctly.
+Irrelevant variables will be deleted.
+Results will be hidden from the report for clarity and space considerations.
+
+```{r, echo=FALSE}
+require(data.table)
+setInternet2(TRUE)
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+D <- fread(url)
+
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+DTest <- fread(url)
+```
+
+##3.3. Removing NAs/Cleaning data and subsetting the primary dataset
+
+```{r, echo=FALSE}
+isAnyMissing <- sapply(DTest, function (x) any(is.na(x) | x == ""))
+isPredictor <- !isAnyMissing & grepl("belt|[^(fore)]arm|dumbbell|forearm", names(isAnyMissing))
+predCandidates <- names(isAnyMissing)[isPredictor]
+#predCandidates
+```
+
+Subset the primary dataset to include only the **predictor candidates** and the outcome variable, `classe`.
+
+**Predictor:** Belt, Arm, Dumbell and forearm with no missing values 
+
+```{r, echo=FALSE}
+varToInclude <- c("classe", predCandidates)
+D <- D[, varToInclude, with=FALSE]
+dim(D)
+names(D)
+```
+
+Here how the Data count looks like after Making `classe` into a factor.
+
+```{r, echo=FALSE}
+D <- D[, classe := factor(D[, classe])]
+D[, .N, classe]
+```
+
+Split the dataset into a 60% training and 40% Cross Validation dataset. 
+Preprocess the Training dataset and Corss Validation dataset prediction variables by centering and scaling.
+
+```{r, echo=FALSE}
+seed <- as.numeric(as.Date("2016-03-15"))
+set.seed(seed)
+inTrain <- createDataPartition(D$classe, p=0.6)
+DTrain <- D[inTrain[[1]]]
+crossv <- D[-inTrain[[1]]]
+```
+
+```{r, echo=FALSE}
+X <- DTrain[, predCandidates, with=FALSE]
+preProc <- preProcess(X)
+preProc
+XCS <- predict(preProc, X)
+DTrainCS <- data.table(data.frame(classe = DTrain[, classe], XCS))
+
+# Training set after Centering and Scaling
+#head(DTrainCS)
+```
+
+Apply the centering and scaling to the Cross Validation dataset.
+
+```{r, echo=FALSE}
+X <- crossv[, predCandidates, with=FALSE]
+XCS <- predict(preProc, X)
+crossvCS <- data.table(data.frame(classe = crossv[, classe], XCS))
+
+# Training set after Centering and Scaling
+#head(crossvCS)
+```
+
+Check for near zero variance.
+
+```{r, echo=FALSE}
+nzv <- nearZeroVar(DTrainCS, saveMetrics=TRUE)
+if (any(nzv$nzv)) nzv else message("No variables with near zero variance")
+```
+
+##3.4. Histogram Plot
+
+Examine groups of prediction (Belt, Arm, Dumbell and forearm) variables.
+
+```{r histGroup, echo=FALSE}
+histGroup <- function (data, regex) {
+  col <- grep(regex, names(data))
+  col <- c(col, which(names(data) == "classe"))
+  n <- nrow(data)
+  DMelted <- melt(data[, col, with=FALSE][, rownum := seq(1, n)], id.vars=c("rownum", "classe"))
+  ggplot(DMelted, aes(x=classe, y=value)) +
+    geom_violin(aes(color=classe, fill=classe), alpha=1/2) +
+    geom_jitter(aes(color=classe, fill=classe), alpha=1/10) +
+    geom_smooth(aes(group=1), method="gam", color="black", alpha=1/2, size=.5) +
+    facet_wrap(~ variable, scale="free_y") +
+    scale_color_brewer(palette="Spectral") +
+    scale_fill_brewer(palette="Spectral") +
+    labs(x="", y="") +
+    theme(legend.position="none")
+}
+histGroup(DTrainCS, "belt")
+histGroup(DTrainCS, "[^(fore)]arm")
+histGroup(DTrainCS, "dumbbell")
+histGroup(DTrainCS, "forearm")
+```
+
+
+#4. Train prediction models
+
+Using random forest, the out of sample error should be small. The error will be estimated using the 40% Cross Validation sample. Error estimate of 3% or less would be acceptable.
+
+```{r, echo=FALSE}
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+```
+
+```{r, echo=FALSE}
+ctrl <- trainControl(classProbs=TRUE,
+                     savePredictions=TRUE,
+                     allowParallel=TRUE)
+```
+
+**Model1 - RandomForest.**
+
+```{r, randomforest, echo=FALSE}
+require(randomForest)
+system.time(trainingModel <- train(classe ~ ., data=DTrainCS, method="rf"))
+#head(trainingModel)
+```
+
+Stop the clusters.
+
+```{r, echo=FALSE}
+stopCluster(cl)
+```
+
+##4.1 Evaluate the Training models
+###4.1.1. Confusion Matrix Model (RandomForest) - Traing Dataset
+
+```{r, echo=FALSE}
+trainingModel
+hatm <- predict(trainingModel, DTrainCS)
+confusionMatrix(hatm, DTrain[, classe])
+```
+
+###4.1.2. Confusion Matrix Model (RandomForest) - Crossv
+
+```{r, echo=FALSE}
+hatm <- predict(trainingModel, crossvCS)
+confusionMatrix(hatm, crossvCS[, classe])
+```
+
+#5. Decision
+
+Accuracy for Random Forest model was 0.991 (95% CI: (0.989, 0.993)). The random Forest model is choosen. The accuracy of the model is 0.995. The expected out-of-sample error is estimated at 0.005, or 0.5%. The expected out-of-sample error is calculated as 1 - accuracy for predictions made against the cross-validation set. Our Test data set comprises 20 cases. With an accuracy above 99% on our cross-validation data, we can expect that very few, or none, of the test samples will be missclassified.
+
+```{r finalModel, echo=FALSE}
+varImp(trainingModel)
+trainingModel$finalModel
+```
+
+Save training model object for later.
+
+```{r, echo=FALSE}
+save(trainingModel, file="trainingModel.RData")
+```
+
+#6. Predict on the test data
+
+Load the training model.
+
+```{r, echo=FALSE}
+load(file="trainingModel.RData", verbose=TRUE)
+```
+
+Get predictions and evaluate.
+
+```{r, echo=FALSE}
+DTestCS <- predict(preProc, DTest[, predCandidates, with=FALSE])
+hatm <- predict(trainingModel, DTestCS)
+DTest <- cbind(hatm , DTest)
+subset(DTest, select=names(DTest)[grep("belt|[^(fore)]arm|dumbbell|forearm", names(DTest), invert=TRUE)])
+```
+
+##6.1. Submission for Assessment
+
+Create submission files.
+
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+    for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(hatm)
+```
+
+***References***
+
+- [1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
